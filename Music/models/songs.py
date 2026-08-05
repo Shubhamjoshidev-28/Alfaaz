@@ -17,12 +17,15 @@ class Songs(
         null=True,
         blank=True
     )
-    lyrics = models.TextField(
+    lyrics = models.FileField(
+        upload_to='lyrics/',
         null=True,
         blank=True
     )
     audio_path = models.FileField(
         upload_to='songs/',
+        null=True,
+        blank=True
     )
     created_at = models.DateTimeField(
         auto_now_add=True

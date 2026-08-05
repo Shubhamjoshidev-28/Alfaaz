@@ -34,14 +34,14 @@ class SongDetailView(
         )
 
         song = SongService.song_detail(
-            song_id=song_id
+            song_id
         )
 
         return Response ( 
             {
                 "success":True,
                 "message":"Song Details Fetched successfully",
-                "song": song
+                "song": serializer.data
             },
             status = status.HTTP_200_OK
         )

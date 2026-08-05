@@ -23,23 +23,19 @@ class SongListView(
     def get(
             self,
             request,
-            song_id
     ):
-        serializer = SongDetailSerializer (
-            data=request.data
-        )
-
-        serializer.is_valid(
-            raise_exception=True
-        )
 
         song = SongService.songs_list()
+        serializer = SongDetailSerializer(
+            song,
+            many=True
+        )
 
         return Response ( 
             {
                 "success":True,
                 "message":"Song Details Fetched successfully",
-                "song": song
+                "song": serializer.data
             },
             status = status.HTTP_200_OK
         )

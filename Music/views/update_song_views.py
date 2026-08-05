@@ -43,7 +43,7 @@ class UpdateSongView(
             {
                 "success":True,
                 "message":"Song Updated successfully",
-                "song": CreateSongSerializer(Songs).data
+                "song": CreateSongSerializer(song).data
             },
             status = status.HTTP_200_OK
         )

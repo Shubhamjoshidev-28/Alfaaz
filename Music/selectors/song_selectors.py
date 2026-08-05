@@ -10,8 +10,8 @@ def get_songs_by_id(
     )
     return song
 
-def get_song(
+def get_all_song(
         
 ):
-    return Songs.objects.all
+    return Songs.objects.all()
     

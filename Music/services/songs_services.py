@@ -1,9 +1,9 @@
 from Music.models.songs import (
     Songs
 )
-from Music.selectors.music_selectors import (
+from Music.selectors.song_selectors import (
     get_songs_by_id,
-    get_song
+    get_all_song
 )
 
 class SongService:
@@ -29,7 +29,7 @@ class SongService:
 
     @staticmethod
     def songs_list():
-        song = get_song()
+        song = get_all_song()
         return song
 
     @staticmethod
@@ -38,8 +38,8 @@ class SongService:
     ):
         song = get_songs_by_id(song_id)
 
-        if song.audio:
-            song.audio.delete(save=False)
+        if song.audio_path:
+            song.audio_path.delete(save=False)
 
         song.delete()
 

@@ -40,7 +40,7 @@ class CreateSongView(
             {
                 "success":True,
                 "message":"Song Added successfully",
-                "song": CreateSongSerializer(Songs).data
+                "song": CreateSongSerializer(song).data
             },
             status = status.HTTP_201_CREATED
         )
