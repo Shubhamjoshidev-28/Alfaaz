@@ -495,6 +495,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
   color: var(--text-dim);
   animation: view-in 0.4s var(--ease);
 }
+.empty-state[hidden] { display: none; }
 .empty-glyph { font-size: 44px; margin-bottom: 8px; filter: drop-shadow(0 0 18px rgba(255, 107, 0, 0.4)); }
 .empty-state h3 { font-size: 18px; color: var(--text); }
 .empty-state p { font-size: 14px; max-width: 320px; margin-bottom: 6px; }

@@ -55,11 +55,11 @@ const api = {
     return request(ENDPOINTS.songDetail(id));
   },
 
-  /** POST /music/add_song/  — multipart form (title, artist, lyrics, audio file) */
-  addSong({ title, artist, lyrics, audioFile }) {
+  /** POST /music/add_song/  — multipart form (title, artist_name, lyrics, audio file) */
+  addSong({ title, artist_name, lyrics, audioFile }) {
     const form = new FormData();
     form.append("title", title);
-    form.append("artist", artist);
+    form.append("artist_name", artist_name);
     form.append("lyrics", lyrics || "");
     if (audioFile) form.append("audio_file", audioFile);
 
@@ -70,10 +70,10 @@ const api = {
   },
 
   /** PATCH /music/update_song/:id/ — multipart form, partial fields allowed */
-  updateSong(id, { title, artist, lyrics, audioFile }) {
+  updateSong(id, { title, artist_name, lyrics, audioFile }) {
     const form = new FormData();
     if (title !== undefined) form.append("title", title);
-    if (artist !== undefined) form.append("artist", artist);
+    if (artist_name !== undefined) form.append("artist_name", artist_name);
     if (lyrics !== undefined) form.append("lyrics", lyrics);
     if (audioFile) form.append("audio_file", audioFile);
 

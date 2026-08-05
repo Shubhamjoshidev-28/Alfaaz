@@ -141,18 +141,6 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /*  Demo fallback (only used if the backend can't be reached at all,   */
-  /*  so the UI has something to demonstrate rather than sitting empty)  */
-  /* ------------------------------------------------------------------ */
-  const DEMO_SONGS = [
-    { id: "demo-1", title: "Midnight Echo", artist: "Rehan Vox", lyrics: "Under the city lights\nWe found our way back home\nMidnight echo, calling out my name" },
-    { id: "demo-2", title: "Paper Skies", artist: "Rehan Vox", lyrics: "Paper skies fold over you\nEvery fold a truth\nI never told" },
-    { id: "demo-3", title: "Golden Hour", artist: "Ila Noor", lyrics: "Golden hour on your face\nTime forgets to move\nIn this quiet, sunlit place" },
-    { id: "demo-4", title: "Static Bloom", artist: "Ila Noor", lyrics: "" },
-    { id: "demo-5", title: "Low Tide", artist: "Marcus Rin", lyrics: "" },
-  ];
-
-  /* ------------------------------------------------------------------ */
   /*  Data loading                                                       */
   /* ------------------------------------------------------------------ */
   async function loadSongs() {
@@ -160,10 +148,10 @@
     renderCurrentView();
     try {
       const data = await window.alfaazApi.getSongs();
-      state.songs = Array.isArray(data) ? data : (data && data.results) || [];
+      state.songs = Array.isArray(data.song) ? data.song : [];
     } catch (err) {
-      state.songs = DEMO_SONGS;
-      toast("Backend unreachable — showing sample songs.", "error");
+      state.songs = [];
+      toast("Couldn't reach the backend. Check your connection and try again.", "error");
     } finally {
       state.loading = false;
       renderCurrentView();
@@ -178,7 +166,7 @@
     const q = state.searchQuery.toLowerCase();
     return (
       (song.title || "").toLowerCase().includes(q) ||
-      (song.artist || "").toLowerCase().includes(q)
+      (song.artist_name || "").toLowerCase().includes(q)
     );
   }
 
@@ -189,7 +177,7 @@
   function getArtistGroups() {
     const map = new Map();
     state.songs.forEach((s) => {
-      const name = s.artist || "Unknown Artist";
+      const name = s.artist_name || "Unknown Artist";
       if (!map.has(name)) map.set(name, []);
       map.get(name).push(s);
     });
@@ -208,7 +196,7 @@
     $(".song-cover-img", node).src = PLACEHOLDER_COVER;
     $(".song-cover-img", node).alt = `${song.title} cover art`;
     $(".song-card-title", node).textContent = song.title || "Untitled";
-    $(".song-card-artist", node).textContent = song.artist || "Unknown Artist";
+    $(".song-card-artist", node).textContent = song.artist_name || "Unknown Artist";
 
     if (fromDownloads || isDownloaded(id)) {
       $(".downloaded-badge", node).hidden = false;
@@ -365,7 +353,7 @@
   function openSongDetails(song, fromView) {
     state.openSongId = songId(song);
     state._detailsSourceView = fromView;
-    $("#details-artist").textContent = song.artist || "Unknown Artist";
+    $("#details-artist").textContent = song.artist_name || "Unknown Artist";
     $("#details-title").textContent = song.title || "Untitled";
     $("#details-cover-img").src = PLACEHOLDER_COVER;
     $("#details-lyrics-text").textContent = song.lyrics && song.lyrics.trim() ? song.lyrics : "No lyrics available for this song yet.";
@@ -377,7 +365,7 @@
 
   function currentListForView() {
     if (state.view === "artist-songs") {
-      return state.songs.filter((s) => (s.artist || "Unknown Artist") === state.activeArtist);
+      return state.songs.filter((s) => (s.artist_name || "Unknown Artist") === state.activeArtist);
     }
     if (state.view === "downloads" || state._detailsSourceView === "downloads") {
       return state.downloads;
@@ -507,10 +495,10 @@
     const cover = PLACEHOLDER_COVER;
     $("#player-thumb").src = cover;
     $("#player-song-name").textContent = song.title || "Untitled";
-    $("#player-artist-name").textContent = song.artist || "Unknown Artist";
+    $("#player-artist-name").textContent = song.artist_name || "Unknown Artist";
     $("#player-expanded-thumb").src = cover;
     $("#player-expanded-title").textContent = song.title || "Untitled";
-    $("#player-expanded-artist").textContent = song.artist || "Unknown Artist";
+    $("#player-expanded-artist").textContent = song.artist_name || "Unknown Artist";
     updateDetailsTransportUI();
   }
 
@@ -669,7 +657,7 @@
       await idbPut({
         id,
         title: song.title,
-        artist: song.artist,
+        artist: song.artist_name,
         lyrics: song.lyrics || "",
         audioBlob: blob,
         downloadedAt: Date.now(),
@@ -735,7 +723,7 @@
     $("#song-modal-title").textContent = "Edit Song";
     $("#song-modal-submit").textContent = "Update";
     $("#field-title").value = song.title || "";
-    $("#field-artist").value = song.artist || "";
+    $("#field-artist").value = song.artist_name || "";
     $("#field-lyrics").value = song.lyrics || "";
     $("#dropzone-filename").textContent = "";
     modalScrim.hidden = false;
@@ -792,14 +780,14 @@
     try {
       if (state.editingSongId) {
         const updated = await window.alfaazApi.updateSong(state.editingSongId, {
-          title, artist, lyrics, audioFile: state.pendingAudioFile,
+          title, artist_name, lyrics, audioFile: state.pendingAudioFile,
         });
         const idx = state.songs.findIndex((s) => songId(s) === state.editingSongId);
-        if (idx !== -1) state.songs[idx] = { ...state.songs[idx], ...(updated || { title, artist, lyrics }) };
+        if (idx !== -1) state.songs[idx] = { ...state.songs[idx], ...(updated || { title, artist_name, lyrics }) };
         toast("Song updated.", "success");
       } else {
-        const created = await window.alfaazApi.addSong({ title, artist, lyrics, audioFile: state.pendingAudioFile });
-        state.songs.unshift(created || { id: `local-${Date.now()}`, title, artist, lyrics });
+        const created = await window.alfaazApi.addSong({ title, artist_name, lyrics, audioFile: state.pendingAudioFile });
+        state.songs.unshift(created || { id: `local-${Date.now()}`, title, artist_name, lyrics });
         toast("Song added.", "success");
       }
       closeModal();
