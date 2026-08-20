@@ -2,8 +2,8 @@ from Music.models.songs import (
     Songs
 )
 from Music.selectors.song_selectors import (
-    get_songs_by_id,
-    get_all_song
+    get_all_songs,
+    get_song_by_id
 )
 
 class SongService:
@@ -18,7 +18,7 @@ class SongService:
         validated_data,
         song_id
     ):
-        song = get_songs_by_id(song_id)
+        song = get_song_by_id(song_id)
 
         for field, value in validated_data.items():
             setattr(song, field, value)
@@ -29,17 +29,20 @@ class SongService:
 
     @staticmethod
     def songs_list():
-        song = get_all_song()
+        song = get_all_songs()
         return song
 
     @staticmethod
     def delete_song(
         song_id
     ):
-        song = get_songs_by_id(song_id)
+        song = get_song_by_id(song_id)
 
         if song.audio_path:
             song.audio_path.delete(save=False)
+
+        if song.lyrics:
+            song.lyrics.delete(save=False)
 
         song.delete()
 
@@ -47,7 +50,7 @@ class SongService:
     def song_detail(
         song_id
     ):
-        song = get_songs_by_id(
+        song = get_song_by_id(
             song_id
         )
         return song

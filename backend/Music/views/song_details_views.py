@@ -17,35 +17,24 @@ from rest_framework import (
     status
 )
 
-class SongDetailView(
-    APIView
-):
-    def get(
-            self,
-            request,
-            song_id
-    ):
-        serializer = SongDetailSerializer (
-            data=request.data
-        )
+class SongDetailView(APIView):
 
-        serializer.is_valid(
-            raise_exception=True
-        )
+    def get(self, request, song_id):
 
         song = SongService.song_detail(
-            song_id
+            song_id=song_id
         )
 
-        return Response ( 
+        serializer = SongDetailSerializer(song)
+
+        return Response(
             {
-                "success":True,
-                "message":"Song Details Fetched successfully",
+                "success": True,
+                "message": "Song Details Fetched successfully",
                 "song": serializer.data
             },
-            status = status.HTTP_200_OK
+            status=status.HTTP_200_OK
         )
-
     
 
 

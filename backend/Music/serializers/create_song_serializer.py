@@ -8,6 +8,9 @@ from Music.models.songs import (
 class CreateSongSerializer (
     serializers.ModelSerializer
 ):
+    lyrics = serializers.FileField(
+        required = False
+    )
     class Meta:
         model = Songs
         fields = [

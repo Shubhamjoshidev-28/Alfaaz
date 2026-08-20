@@ -3,3 +3,5 @@ migrations/
 venv/
 songs/
 db.sqlite3
+media/
+.vscode/
