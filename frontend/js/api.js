@@ -80,6 +80,16 @@ const ApiService = {
     return this._request(`/music/delete_song/${id}/`, { method: 'DELETE' });
   },
 
+  /**
+   * POST /music/bulk_upload/  (multipart/form-data)
+   * Backend serializer expects repeated `audio_files` entries and nothing else.
+   * Response shape is { success, message, count } — no song objects, so the
+   * caller must reload the song list afterwards rather than assume more.
+   */
+  async bulkUpload(formData) {
+    return this._request('/music/bulk_upload/', { method: 'POST', body: formData });
+  },
+
   /** Fetches the lyrics .txt file referenced by song.lyrics and returns its text content */
   async fetchLyricsText(lyricsPath) {
     if (!lyricsPath) return '';

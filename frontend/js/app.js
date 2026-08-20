@@ -293,8 +293,10 @@ class AudioPlayerController {
   }
 
   seekToFraction(fraction) {
-    if (!isFinite(this.audio.duration) || !this.audio.duration) return;
-    this.audio.currentTime = fraction * this.audio.duration;
+    if (!Number.isFinite(this.audio.duration) || this.audio.duration <= 0) return;
+    const clampedFraction = Math.min(Math.max(fraction, 0), 1);
+    const target = Math.min(Math.max(clampedFraction * this.audio.duration, 0), this.audio.duration);
+    this.audio.currentTime = target;
   }
 
   setVolume(v) { this.audio.volume = v; }
@@ -398,6 +400,15 @@ const App = {
   openMenuEl: null,
   downloadedIds: new Set(),
 
+  // Seek-bar drag state: while true, player-update events must not
+  // overwrite the seek bar's visual position (see onPlayerUpdate).
+  isSeeking: false,
+
+  // Bulk upload modal state.
+  bulkFiles: [],
+  bulkUploading: false,
+  _bulkTriggerEl: null,
+
   player: null,
 
   init() {
@@ -405,6 +416,7 @@ const App = {
     this.bindNav();
     this.bindSongsView();
     this.bindModal();
+    this.bindBulkUploadModal();
     this.bindDetail();
     this.bindMiniPlayer();
     this.bindSettings();
@@ -456,8 +468,16 @@ const App = {
 
   /* ---------------- NAVIGATION ---------------- */
   bindNav() {
-    document.querySelectorAll('.nav-item').forEach(btn => {
-      btn.addEventListener('click', () => this.showView(btn.dataset.view));
+    // Single delegated listener — not one per button — so mobile's four
+    // equal-width nav items each stay independently, reliably clickable
+    // without stacking duplicate handlers.
+    el('sidebar').addEventListener('click', (e) => {
+      const item = e.target.closest('.nav-item');
+      if (!item || !el('sidebar').contains(item)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const view = item.dataset.view;
+      if (view) this.showView(view);
     });
     el('backFromArtist').addEventListener('click', () => this.showView('artists'));
   },
@@ -622,6 +642,7 @@ const App = {
   bindSongsView() {
     el('searchInput').addEventListener('input', () => this.applySearchFilter());
     el('addSongBtn').addEventListener('click', () => this.openAddModal());
+    el('bulkUploadBtn').addEventListener('click', (e) => this.openBulkModal(e.currentTarget));
   },
 
   applySearchFilter() {
@@ -795,6 +816,215 @@ const App = {
     }
   },
 
+  /* ---------------- BULK UPLOAD ---------------- */
+  bindBulkUploadModal() {
+    const dropzone = el('bulkDropzone');
+    const fileInput = el('bulkFileInput');
+
+    el('bulkCancelBtn').addEventListener('click', () => this.closeBulkModal());
+    el('bulkUploadModal').addEventListener('click', (e) => {
+      if (e.target.id === 'bulkUploadModal') this.closeBulkModal();
+    });
+    el('bulkClearAllBtn').addEventListener('click', () => this.clearBulkFiles());
+    el('bulkUploadSubmitBtn').addEventListener('click', () => this.submitBulkUpload());
+
+    // Clicking/activating the dropzone opens the native file picker.
+    dropzone.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        fileInput.click();
+      }
+    });
+
+    fileInput.addEventListener('change', () => {
+      this.addBulkFiles(fileInput.files);
+      fileInput.value = ''; // allow re-selecting the same file(s) later
+    });
+
+    // Drag-and-drop: prevent the browser's default "open file" behavior
+    // on every relevant event, not just drop.
+    let dragDepth = 0;
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(evt => {
+      dropzone.addEventListener(evt, (e) => e.preventDefault());
+    });
+    dropzone.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      dragDepth++;
+      dropzone.classList.add('dragover');
+    });
+    dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    dropzone.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) dropzone.classList.remove('dragover');
+    });
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      dropzone.classList.remove('dragover');
+      if (e.dataTransfer?.files?.length) this.addBulkFiles(e.dataTransfer.files);
+    });
+  },
+
+  openBulkModal(triggerEl) {
+    this._bulkTriggerEl = triggerEl || document.activeElement;
+    this.bulkFiles = [];
+    this.bulkUploading = false;
+    this.renderBulkFileList();
+    this.setBulkStatus(null);
+    this.setBulkUploadingState(false);
+
+    const overlay = el('bulkUploadModal');
+    overlay.hidden = false;
+    overlay.setAttribute('aria-hidden', 'false');
+    requestAnimationFrame(() => overlay.classList.add('open'));
+    el('bulkDropzone').focus();
+  },
+
+  closeBulkModal() {
+    if (this.bulkUploading) return; // don't allow closing mid-upload
+    const overlay = el('bulkUploadModal');
+    // Never set aria-hidden on an element that still contains focus.
+    if (overlay.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
+    overlay.classList.remove('open');
+    overlay.setAttribute('aria-hidden', 'true');
+    if (this._bulkTriggerEl && typeof this._bulkTriggerEl.focus === 'function') {
+      this._bulkTriggerEl.focus();
+    }
+    this._bulkTriggerEl = null;
+  },
+
+  /** Accepts audio files only; rejects everything else and reports the reject count. */
+  addBulkFiles(fileList) {
+    const AUDIO_EXT = /\.(mp3|wav|m4a|aac|flac|ogg|oga|opus|wma|aiff|alac)$/i;
+    const incoming = Array.from(fileList || []);
+    let rejected = 0;
+    let duplicates = 0;
+
+    incoming.forEach(file => {
+      const isAudio = file.type.startsWith('audio/') || AUDIO_EXT.test(file.name);
+      if (!isAudio) { rejected++; return; }
+
+      const isDuplicate = this.bulkFiles.some(f =>
+        f.name === file.name && f.size === file.size && f.lastModified === file.lastModified
+      );
+      if (isDuplicate) { duplicates++; return; }
+
+      this.bulkFiles.push(file);
+    });
+
+    this.renderBulkFileList();
+
+    if (rejected > 0) {
+      showToast(`${rejected} file${rejected === 1 ? '' : 's'} skipped — only audio files are supported.`, 'error');
+    } else if (duplicates > 0 && incoming.length === duplicates) {
+      showToast('Those file(s) are already selected.');
+    }
+  },
+
+  removeBulkFile(index) {
+    this.bulkFiles.splice(index, 1);
+    this.renderBulkFileList();
+  },
+
+  clearBulkFiles() {
+    this.bulkFiles = [];
+    this.renderBulkFileList();
+  },
+
+  renderBulkFileList() {
+    const list = el('bulkFileList');
+    const count = this.bulkFiles.length;
+
+    el('bulkFileCount').textContent = `Selected: ${count} song${count === 1 ? '' : 's'}`;
+    el('bulkClearAllBtn').hidden = count === 0;
+    el('bulkUploadSubmitBtn').disabled = count === 0 || this.bulkUploading;
+
+    list.innerHTML = '';
+    this.bulkFiles.forEach((file, i) => {
+      const item = document.createElement('div');
+      item.className = 'bulk-file-item';
+      item.innerHTML = `
+        <svg class="bulk-file-icon" viewBox="0 0 24 24" fill="none"><path d="M9 18V5l12-2v13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6" cy="18" r="3" stroke="currentColor" stroke-width="1.6"/><circle cx="18" cy="16" r="3" stroke="currentColor" stroke-width="1.6"/></svg>
+        <span class="bulk-file-name"></span>
+        <button type="button" class="bulk-file-remove" aria-label="Remove ${escapeHtml(file.name)}">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+      `;
+      item.querySelector('.bulk-file-name').textContent = file.name;
+      item.querySelector('.bulk-file-remove').addEventListener('click', () => this.removeBulkFile(i));
+      list.appendChild(item);
+    });
+  },
+
+  setBulkStatus(message, type) {
+    const errorBox = el('bulkUploadError');
+    const successBox = el('bulkUploadSuccess');
+    errorBox.hidden = true;
+    successBox.hidden = true;
+    if (!message) return;
+    if (type === 'success') {
+      successBox.textContent = message;
+      successBox.hidden = false;
+    } else {
+      errorBox.textContent = message;
+      errorBox.hidden = false;
+    }
+  },
+
+  setBulkUploadingState(isUploading) {
+    this.bulkUploading = isUploading;
+    el('bulkUploadSubmitBtn').disabled = isUploading || this.bulkFiles.length === 0;
+    el('bulkUploadSubmitLabel').textContent = isUploading ? 'Uploading…' : 'Upload Songs';
+    el('bulkCancelBtn').disabled = isUploading;
+    el('bulkClearAllBtn').disabled = isUploading;
+    el('bulkDropzone').style.pointerEvents = isUploading ? 'none' : '';
+  },
+
+  async submitBulkUpload() {
+    if (this.bulkUploading) return;
+
+    if (!this.bulkFiles.length) {
+      this.setBulkStatus('Please select at least one audio file.', 'error');
+      return;
+    }
+
+    const formData = new FormData();
+    this.bulkFiles.forEach(file => formData.append('audio_files', file));
+
+    this.setBulkStatus(null);
+    this.setBulkUploadingState(true);
+
+    try {
+      const body = await ApiService.bulkUpload(formData);
+      const count = (body && typeof body.count === 'number') ? body.count : this.bulkFiles.length;
+
+      this.setBulkUploadingState(false);
+      this.closeBulkModal();
+      showToast(`${count} song${count === 1 ? '' : 's'} uploaded successfully`, 'success');
+
+      // Backend is the source of truth — reload rather than construct songs locally.
+      await this.loadSongs();
+      if (this.currentView === 'artists') this.renderArtists();
+    } catch (err) {
+      console.error('Bulk upload failed:', err);
+      this.setBulkUploadingState(false);
+
+      let message = 'Upload failed. Check the selected files.';
+      if (err.status === 0) message = 'Server could not be reached.';
+      else if (err.status === 400) message = err.message || 'Upload failed. Check the selected files.';
+      else if (err.status === 404) message = 'Upload endpoint could not be found.';
+      else if (err.status >= 500) message = 'Server error. Please try again shortly.';
+      this.setBulkStatus(message, 'error');
+    }
+  },
+
   /* ---------------- DELETE ---------------- */
   async deleteSong(song) {
     const ok = confirm(`Delete "${song.title}"? This cannot be undone.`);
@@ -830,15 +1060,43 @@ const App = {
 
   const seekBar = el('seekBar');
 
+    // Dragging begins: block player-update events from overwriting the
+    // bar while the user has their finger/mouse on it (pointer events
+    // unify mouse, touch, and pen).
+    seekBar.addEventListener('pointerdown', () => { this.isSeeking = true; });
+
+    // While dragging (or using arrow keys): update the visual position
+    // and the time label immediately, but do NOT touch audio.currentTime
+    // yet — that would fight the drag and cause stutter/snapping.
     seekBar.addEventListener('input', () => {
-    const fraction = Number(seekBar.value) / 100;
-    seekBar.style.setProperty(
-      '--fill',
-      `${seekBar.value}%`
-    );
-  
-    this.player.seekToFraction(fraction);
-  });
+      const fraction = Number(seekBar.value) / 100;
+      seekBar.style.setProperty('--fill', `${seekBar.value}%`);
+      const duration = this.player.audio.duration;
+      if (Number.isFinite(duration) && duration > 0) {
+        el('curTime').textContent = formatTime(fraction * duration);
+      }
+    });
+
+    // Release: commit the seek exactly once, using the final slider value.
+    // 'change' fires on mouseup/touchend for range inputs, and also after
+    // a keyboard-driven adjustment. 'pointerup' is a second, explicit
+    // signal for the same release moment so touch/mobile browsers that are
+    // inconsistent about firing 'change' still commit the seek. Calling
+    // this twice for one release is harmless — both read the same final
+    // slider value.
+    const commitSeek = () => {
+      const fraction = Number(seekBar.value) / 100;
+      this.player.seekToFraction(fraction);
+      this.isSeeking = false;
+    };
+    seekBar.addEventListener('change', commitSeek);
+    seekBar.addEventListener('pointerup', commitSeek);
+
+    // Safety net: if a touch/pointer gesture is cancelled (e.g. an
+    // interrupting system gesture) without a 'change'/'pointerup' event,
+    // don't leave the seek bar permanently frozen out of normal playback
+    // updates.
+    seekBar.addEventListener('pointercancel', () => { this.isSeeking = false; });
 
     el('volumeSlider').addEventListener('input', (e) => this.player.setVolume(parseFloat(e.target.value)));
     el('volumeToggle').addEventListener('click', () => {
@@ -922,7 +1180,7 @@ const App = {
       el('durTime').textContent = formatTime(detail.duration);
       const fraction = detail.duration ? (detail.currentTime / detail.duration) * 100 : 0;
       const seekBar = el('seekBar');
-      if (document.activeElement !== seekBar) {
+      if (!this.isSeeking) {
         seekBar.value = fraction;
         seekBar.style.setProperty('--fill', fraction + '%');
       }
@@ -938,9 +1196,11 @@ const App = {
       el('miniProgressFill').style.width = fraction + '%';
       el('miniPlayIcon').style.display = detail.isPlaying ? 'none' : '';
       el('miniPauseIcon').style.display = detail.isPlaying ? '' : 'none';
-      const mini = el('miniPlayer');
-      mini.classList.add('visible');
-      mini.setAttribute('aria-hidden', 'false');
+      // Visibility is handled purely through CSS (.visible toggles
+      // visibility/opacity/pointer-events) — never via aria-hidden, since
+      // this is a focusable <button> and toggling aria-hidden on an
+      // element that can retain focus triggers a browser warning.
+      el('miniPlayer').classList.add('visible');
     }
 
     this.reflectPlayingState();
@@ -1079,7 +1339,7 @@ const App = {
   /* ---------------- SERVICE WORKER ---------------- */
   registerServiceWorker() {
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('js/service-worker.js', { scope: './' })
+      navigator.serviceWorker.register('./service-worker.js', { scope: './' })
         .catch(() => { /* offline-first still works via IndexedDB */ });
     }
   }
