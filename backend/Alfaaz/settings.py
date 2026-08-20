@@ -59,7 +59,9 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = [
+    "https://shubhamjoshidev-28.github.io",
+]
 
 ROOT_URLCONF = 'Alfaaz.urls'
 

@@ -4,7 +4,7 @@
    Every method returns the parsed JSON / throws a normalized Error.
    =========================================================== */
 
-const API_BASE = 'http://127.0.0.1:8000';
+const API_BASE = 'https://80.225.231.54';
 
 class ApiError extends Error {
   constructor(message, status) {
