@@ -989,39 +989,62 @@ const App = {
 
   async submitBulkUpload() {
     if (this.bulkUploading) return;
-
+  
     if (!this.bulkFiles.length) {
       this.setBulkStatus('Please select at least one audio file.', 'error');
       return;
     }
-
-    const formData = new FormData();
-    this.bulkFiles.forEach(file => formData.append('audio_files', file));
-
+  
+    const files = [...this.bulkFiles];
+  
     this.setBulkStatus(null);
     this.setBulkUploadingState(true);
-
+  
+    let uploaded = 0;
+    let failed = 0;
+  
     try {
-      const body = await ApiService.bulkUpload(formData);
-      const count = (body && typeof body.count === 'number') ? body.count : this.bulkFiles.length;
-
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append('audio_files', file);
+  
+        try {
+          console.log(`Uploading ${file.name}...`);
+  
+          await ApiService.bulkUpload(formData);
+  
+          uploaded++;
+          console.log(`Uploaded ${file.name}`);
+  
+        } catch (err) {
+          failed++;
+          console.error(`Failed: ${file.name}`, err);
+        }
+      }
+  
       this.setBulkUploadingState(false);
-      this.closeBulkModal();
-      showToast(`${count} song${count === 1 ? '' : 's'} uploaded successfully`, 'success');
-
-      // Backend is the source of truth — reload rather than construct songs locally.
+  
       await this.loadSongs();
-      if (this.currentView === 'artists') this.renderArtists();
-    } catch (err) {
-      console.error('Bulk upload failed:', err);
+  
+      if (this.currentView === 'artists') {
+        this.renderArtists();
+      }
+  
+      if (failed === 0) {
+        this.closeBulkModal();
+        showToast(
+          `${uploaded} song${uploaded === 1 ? '' : 's'} uploaded successfully`,
+          'success'
+        );
+      } else {
+        this.setBulkStatus(
+          `${uploaded} uploaded, ${failed} failed. You can retry the failed files.`,
+          'error'
+        );
+      }
+  
+    } finally {
       this.setBulkUploadingState(false);
-
-      let message = 'Upload failed. Check the selected files.';
-      if (err.status === 0) message = 'Server could not be reached.';
-      else if (err.status === 400) message = err.message || 'Upload failed. Check the selected files.';
-      else if (err.status === 404) message = 'Upload endpoint could not be found.';
-      else if (err.status >= 500) message = 'Server error. Please try again shortly.';
-      this.setBulkStatus(message, 'error');
     }
   },
 
