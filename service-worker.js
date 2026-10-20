@@ -6,7 +6,8 @@
    =========================================================== */
 
 const CACHE_NAME = 'alfaaz-shell-v1';
-const API_CACHE_NAME = 'alfaaz-api-v1';
+const API_CACHE_NAME = 'alfaaz-api-v2';
+const API_ORIGIN = 'https://80.225.231.54';
 
 const SHELL_FILES = [
   './',
@@ -56,16 +57,36 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Backend song list: network-first, falling back to last known cache when offline
-  if (url.pathname.startsWith('/music/song_list/')) {
+  // Backend song list: network-first, with a valid offline fallback.
+  // Match the exact API origin so unrelated hosts with the same path are ignored.
+  if (url.origin === API_ORIGIN && url.pathname.startsWith('/music/song_list/')) {
     event.respondWith(
       fetch(req)
         .then((res) => {
-          const clone = res.clone();
-          caches.open(API_CACHE_NAME).then((cache) => cache.put(req, clone));
+          if (res.ok) {
+            const clone = res.clone();
+            caches.open(API_CACHE_NAME)
+              .then((cache) => cache.put(req, clone))
+              .catch(() => {});
+          }
           return res;
         })
-        .catch(() => caches.match(req))
+        .catch(async () => {
+          const cached = await caches.match(req);
+          if (cached) return cached;
+
+          // A fetch handler must always resolve to a Response, never undefined.
+          return new Response(
+            JSON.stringify({
+              success: false,
+              message: 'The API is unavailable and no cached song list exists.'
+            }),
+            {
+              status: 503,
+              headers: { 'Content-Type': 'application/json; charset=utf-8' }
+            }
+          );
+        })
     );
     return;
   }
