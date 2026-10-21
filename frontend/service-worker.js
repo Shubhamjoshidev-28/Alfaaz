@@ -51,7 +51,7 @@ self.addEventListener('fetch', (event) => {
         const clone = res.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
         return res;
-      }).catch(() => cached))
+      }).catch(() => cached || new Response('App shell unavailable offline.', { status: 503, statusText: 'Offline' })))
     );
     return;
   }
@@ -65,7 +65,13 @@ self.addEventListener('fetch', (event) => {
           caches.open(API_CACHE_NAME).then((cache) => cache.put(req, clone));
           return res;
         })
-        .catch(() => caches.match(req))
+        .catch(async () => {
+          const cached = await caches.match(req);
+          return cached || new Response(
+            JSON.stringify({ success: false, message: 'API unavailable and no cached response exists.' }),
+            { status: 503, statusText: 'Service Unavailable', headers: { 'Content-Type': 'application/json' } }
+          );
+        })
     );
     return;
   }

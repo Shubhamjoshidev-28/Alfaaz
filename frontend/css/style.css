@@ -420,6 +420,8 @@ input[type="range"]::-moz-range-thumb{ width:13px; height:13px; border-radius:50
   background:var(--orange); box-shadow:0 0 0 4px var(--orange-dim); cursor:pointer; }
 .seek-bar{
   background:linear-gradient(to right, var(--orange) var(--fill,0%), var(--glass-border) var(--fill,0%));
+  touch-action: pan-x;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .controls-row{ display:flex; align-items:center; justify-content:center; gap:16px; margin-bottom:22px; }
