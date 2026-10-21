@@ -28,10 +28,34 @@ const ApiService = {
     return API_BASE + (path.startsWith('/') ? path : `/${path}`);
   },
 
+  /**
+   * Seeking only works smoothly when the server answers HTTP Range requests
+   * (206 Partial Content). Django's dev server / plain `serve` view does NOT,
+   * so the browser can't jump to a position it hasn't downloaded yet.
+   * We probe once per origin and the player falls back to a Blob if needed.
+   */
+  _rangeCache: {},
+  async supportsRange(url) {
+    let origin;
+    try { origin = new URL(url, location.href).origin; } catch (_) { return false; }
+    if (origin in this._rangeCache) return this._rangeCache[origin];
+
+    let ok = false;
+    const ctrl = new AbortController();
+    try {
+      const res = await fetch(url, { headers: { Range: 'bytes=0-1' }, signal: ctrl.signal });
+      ok = res.status === 206;
+    } catch (_) { ok = false; }
+    finally { ctrl.abort(); }   // never download the whole file just to probe
+
+    this._rangeCache[origin] = ok;
+    return ok;
+  },
+
   async _request(path, options = {}) {
     let res;
     try {
-      res = await fetch(API_BASE + path, options);
+      res = await fetch(API_BASE + (path.startsWith('/') ? path : `/${path}`), options);
     } catch (err) {
       throw new ApiError('Could not reach the server. Check that the backend is running.', 0);
     }

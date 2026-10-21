@@ -100,9 +100,13 @@ class AudioPlayerController {
     this.shuffle = false;
     this.loop = false;
     this._objectUrl = null;
+    this._loadToken = 0;   // guards against stale async loads when songs change quickly
 
     this.audio.addEventListener('timeupdate', () => this._emit());
     this.audio.addEventListener('loadedmetadata', () => this._emit());
+    this.audio.addEventListener('durationchange', () => this._emit());
+    this.audio.addEventListener('seeking', () => this._emit({ seeking: true }));
+    this.audio.addEventListener('seeked', () => this._emit({ seeking: false }));
     this.audio.addEventListener('play', () => this._emit());
     this.audio.addEventListener('pause', () => this._emit());
     this.audio.addEventListener('ended', () => this._onEnded());
@@ -187,6 +191,8 @@ class AudioPlayerController {
    const song = this.current;
  
    if (!song) return false;
+
+   const token = ++this._loadToken;
  
    if (this._objectUrl) {
      URL.revokeObjectURL(this._objectUrl);
@@ -219,17 +225,42 @@ class AudioPlayerController {
        this._emit({
          error: 'This song has no audio file.'
        });
- 
+
        return false;
      }
- 
-     src = ApiService.resolveMediaUrl(
-       song.audio_path
-     );
+
+     const url = ApiService.resolveMediaUrl(song.audio_path);
+     this.audio.pause();
+
+     if (await ApiService.supportsRange(url)) {
+       // Server supports Range requests -> stream, seeking works natively.
+       src = url;
+     } else {
+       // Server ignores Range -> the browser can't seek a stream. Load the file
+       // as a Blob so every position is instantly seekable.
+       try {
+         const blob = await ApiService.fetchAudioBlob(song.audio_path);
+         if (token !== this._loadToken) return false;
+         this._objectUrl = URL.createObjectURL(blob);
+         src = this._objectUrl;
+       } catch (error) {
+         console.warn('Blob load failed, falling back to streaming:', error);
+         src = url;
+       }
+     }
    }
- 
+
+   // A newer song was requested while we were loading this one.
+   if (token !== this._loadToken) {
+     if (this._objectUrl && src === this._objectUrl) {
+       URL.revokeObjectURL(this._objectUrl);
+       this._objectUrl = null;
+     }
+     return false;
+   }
+
    this.audio.pause();
- 
+
    this.audio.src = src;
    this.audio.currentTime = 0;
    this.audio.load();
@@ -293,10 +324,42 @@ class AudioPlayerController {
   }
 
   seekToFraction(fraction) {
-    if (!Number.isFinite(this.audio.duration) || this.audio.duration <= 0) return;
-    const clampedFraction = Math.min(Math.max(fraction, 0), 1);
-    const target = Math.min(Math.max(clampedFraction * this.audio.duration, 0), this.audio.duration);
-    this.audio.currentTime = target;
+    const audio = this.audio;
+    const duration = audio.duration;
+
+    if (!Number.isFinite(duration) || duration <= 0) {
+      console.warn('Cannot seek before audio duration is available.', {
+        readyState: audio.readyState,
+        networkState: audio.networkState,
+        src: audio.currentSrc
+      });
+      return false;
+    }
+
+    const value = Number(fraction);
+    const safeFraction = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
+    const target = Math.min(duration, Math.max(0, safeFraction * duration));
+
+    try {
+      // Do not clamp to audio.seekable: some browsers expose only the current
+      // buffered window there. Request the actual position based on duration.
+      audio.currentTime = target;
+      this._emit({ seeking: true });
+      return true;
+    } catch (error) {
+      console.error(`Unable to seek audio to ${target}s`, error);
+      this._emit({ error: 'Unable to move to that position in this song.' });
+      return false;
+    }
+  }
+
+  /** Relative skip in seconds (negative = back). Used by keyboard / buttons. */
+  skipBy(seconds) {
+    const a = this.audio;
+    if (!Number.isFinite(a.duration) || a.duration <= 0) return false;
+    a.currentTime = Math.min(a.duration, Math.max(0, a.currentTime + seconds));
+    this._emit({ seeking: true });
+    return true;
   }
 
   setVolume(v) { this.audio.volume = v; }
@@ -1081,45 +1144,74 @@ const App = {
     el('shuffleBtn').addEventListener('click', () => this.player.toggleShuffle());
     el('loopBtn').addEventListener('click', () => this.player.toggleLoop());
 
-  const seekBar = el('seekBar');
+    const seekBar = el('seekBar');
+    const audio = this.player.audio;
+    seekBar.step = '0.01';                 // fine-grained, smooth scrubbing
+    seekBar.style.touchAction = 'pan-y';   // horizontal drags belong to the slider
 
-    // Dragging begins: block player-update events from overwriting the
-    // bar while the user has their finger/mouse on it (pointer events
-    // unify mouse, touch, and pen).
-    seekBar.addEventListener('pointerdown', () => { this.isSeeking = true; });
+    let dragging = false;
 
-    // While dragging (or using arrow keys): update the visual position
-    // and the time label immediately, but do NOT touch audio.currentTime
-    // yet — that would fight the drag and cause stutter/snapping.
-    seekBar.addEventListener('input', () => {
-      const fraction = Number(seekBar.value) / 100;
-      seekBar.style.setProperty('--fill', `${seekBar.value}%`);
-      const duration = this.player.audio.duration;
-      if (Number.isFinite(duration) && duration > 0) {
-        el('curTime').textContent = formatTime(fraction * duration);
+    // While dragging: only update the visuals (no audio seeking -> no stutter).
+    const previewSeek = () => {
+      const percent = Math.min(100, Math.max(0, Number(seekBar.value) || 0));
+      seekBar.style.setProperty('--fill', `${percent}%`);
+      el('miniProgressFill').style.width = `${percent}%`;
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        el('curTime').textContent = formatTime((percent / 100) * audio.duration);
       }
+    };
+
+    // On release: seek the audio exactly once.
+    const commitSeek = () => {
+      if (!dragging) return;
+      dragging = false;
+      this.player.seekToFraction((Number(seekBar.value) || 0) / 100);
+      // Let the audio element catch up before the UI resumes following it.
+      const release = () => { this.isSeeking = false; };
+      audio.addEventListener('seeked', release, { once: true });
+      setTimeout(release, 400);   // safety net if 'seeked' never fires
+    };
+
+    const beginSeek = () => { dragging = true; this.isSeeking = true; };
+
+    seekBar.addEventListener('pointerdown', beginSeek);
+    seekBar.addEventListener('input', () => {
+      if (!dragging) {
+        // keyboard / assistive-tech change with no pointer involved
+        this.isSeeking = true;
+        previewSeek();
+        this.player.seekToFraction((Number(seekBar.value) || 0) / 100);
+        setTimeout(() => { this.isSeeking = false; }, 150);
+        return;
+      }
+      previewSeek();
+    });
+    seekBar.addEventListener('pointerup', commitSeek);
+    seekBar.addEventListener('pointercancel', commitSeek);
+    seekBar.addEventListener('change', commitSeek);
+    window.addEventListener('pointerup', commitSeek);   // released outside the bar
+
+    // Keyboard: Left/Right = -/+5s, PageDown/PageUp = -/+10s
+    seekBar.addEventListener('keydown', (e) => {
+      const map = { ArrowLeft: -5, ArrowRight: 5, PageDown: -10, PageUp: 10 };
+      if (!(e.key in map)) return;
+      e.preventDefault();
+      this.player.skipBy(map[e.key]);
     });
 
-    // Release: commit the seek exactly once, using the final slider value.
-    // 'change' fires on mouseup/touchend for range inputs, and also after
-    // a keyboard-driven adjustment. 'pointerup' is a second, explicit
-    // signal for the same release moment so touch/mobile browsers that are
-    // inconsistent about firing 'change' still commit the seek. Calling
-    // this twice for one release is harmless — both read the same final
-    // slider value.
-    const commitSeek = () => {
-      const fraction = Number(seekBar.value) / 100;
-      this.player.seekToFraction(fraction);
-      this.isSeeking = false;
+    // Smooth progress: timeupdate only fires ~4x/second, so animate the bar
+    // every frame from audio.currentTime while playing.
+    const tick = () => {
+      if (!this.isSeeking && !audio.paused && Number.isFinite(audio.duration) && audio.duration > 0) {
+        const pct = (audio.currentTime / audio.duration) * 100;
+        seekBar.value = pct;
+        seekBar.style.setProperty('--fill', `${pct}%`);
+        el('miniProgressFill').style.width = `${pct}%`;
+        el('curTime').textContent = formatTime(audio.currentTime);
+      }
+      requestAnimationFrame(tick);
     };
-    seekBar.addEventListener('change', commitSeek);
-    seekBar.addEventListener('pointerup', commitSeek);
-
-    // Safety net: if a touch/pointer gesture is cancelled (e.g. an
-    // interrupting system gesture) without a 'change'/'pointerup' event,
-    // don't leave the seek bar permanently frozen out of normal playback
-    // updates.
-    seekBar.addEventListener('pointercancel', () => { this.isSeeking = false; });
+    requestAnimationFrame(tick);
 
     el('volumeSlider').addEventListener('input', (e) => this.player.setVolume(parseFloat(e.target.value)));
     el('volumeToggle').addEventListener('click', () => {
