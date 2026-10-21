@@ -4,7 +4,9 @@
    Every method returns the parsed JSON / throws a normalized Error.
    =========================================================== */
 
-const API_BASE = 'https://80.225.231.54';
+// Local frontend can test against the deployed HTTPS API.
+// Change this only when intentionally running Django locally.
+const API_BASE = 'http://127.0.0.1:8000';  // no trailing slash
 
 class ApiError extends Error {
   constructor(message, status) {
@@ -118,7 +120,9 @@ const ApiService = {
   async fetchLyricsText(lyricsPath) {
     if (!lyricsPath) return '';
     const url = this.resolveMediaUrl(lyricsPath);
-    const res = await fetch(url);
+    let res;
+    try { res = await fetch(url); }
+    catch (_) { throw new ApiError('Lyrics file could not be reached.', 0); }
     if (!res.ok) throw new ApiError('Lyrics file could not be loaded.', res.status);
     return res.text();
   },
@@ -126,9 +130,29 @@ const ApiService = {
   /** Fetches raw audio bytes as a Blob, used for offline downloads */
   async fetchAudioBlob(audioPath) {
     const url = this.resolveMediaUrl(audioPath);
-    const res = await fetch(url);
-    if (!res.ok) throw new ApiError('Audio file could not be downloaded.', res.status);
-    return res.blob();
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (err) {
+      // fetch() rejects for network failures AND for missing CORS headers.
+      // <audio> can play cross-origin files without CORS, but fetch() cannot read them.
+      throw new ApiError(
+        'Could not download the audio file. Make sure the server is running and allows CORS for /media/ files.',
+        0
+      );
+    }
+    if (!res.ok) throw new ApiError(`Audio file could not be downloaded (${res.status}).`, res.status);
+
+    const blob = await res.blob();
+    if (!blob.size) throw new ApiError('The audio file downloaded empty.', res.status);
+
+    // Some servers send application/octet-stream; make sure the blob is playable.
+    if (!blob.type || !blob.type.startsWith('audio/')) {
+      const ext = (audioPath.split('?')[0].split('.').pop() || '').toLowerCase();
+      const types = { mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', opus: 'audio/ogg' };
+      return new Blob([blob], { type: types[ext] || 'audio/mpeg' });
+    }
+    return blob;
   }
 };
 

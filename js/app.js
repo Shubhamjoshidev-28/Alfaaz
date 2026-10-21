@@ -26,7 +26,8 @@ class OfflineStore {
         }
       };
       req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => { this._dbPromise = null; reject(req.error); };
+      req.onblocked = () => { this._dbPromise = null; reject(new Error('Offline storage is blocked by another tab. Close other tabs and retry.')); };
     });
     return this._dbPromise;
   }
@@ -45,6 +46,7 @@ class OfflineStore {
       });
       tx.oncomplete = () => resolve(true);
       tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Saving was aborted.'));
     });
   }
 
@@ -462,6 +464,7 @@ const App = {
   editingSongId: null,
   openMenuEl: null,
   downloadedIds: new Set(),
+  downloadingIds: new Set(),
 
   // Seek-bar drag state: while true, player-update events must not
   // overwrite the seek bar's visual position (see onPlayerUpdate).
@@ -643,10 +646,6 @@ const App = {
     const downloadBtn = row.querySelector('.row-download-btn');
     downloadBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (this.downloadedIds.has(song.id)) {
-        showToast('Already downloaded for offline playback');
-        return;
-      }
       await this.downloadSong(song);
     });
 
@@ -1052,62 +1051,39 @@ const App = {
 
   async submitBulkUpload() {
     if (this.bulkUploading) return;
-  
+
     if (!this.bulkFiles.length) {
       this.setBulkStatus('Please select at least one audio file.', 'error');
       return;
     }
-  
-    const files = [...this.bulkFiles];
-  
+
+    const formData = new FormData();
+    this.bulkFiles.forEach(file => formData.append('audio_files', file));
+
     this.setBulkStatus(null);
     this.setBulkUploadingState(true);
-  
-    let uploaded = 0;
-    let failed = 0;
-  
+
     try {
-      for (const file of files) {
-        const formData = new FormData();
-        formData.append('audio_files', file);
-  
-        try {
-          console.log(`Uploading ${file.name}...`);
-  
-          await ApiService.bulkUpload(formData);
-  
-          uploaded++;
-          console.log(`Uploaded ${file.name}`);
-  
-        } catch (err) {
-          failed++;
-          console.error(`Failed: ${file.name}`, err);
-        }
-      }
-  
+      const body = await ApiService.bulkUpload(formData);
+      const count = (body && typeof body.count === 'number') ? body.count : this.bulkFiles.length;
+
       this.setBulkUploadingState(false);
-  
+      this.closeBulkModal();
+      showToast(`${count} song${count === 1 ? '' : 's'} uploaded successfully`, 'success');
+
+      // Backend is the source of truth — reload rather than construct songs locally.
       await this.loadSongs();
-  
-      if (this.currentView === 'artists') {
-        this.renderArtists();
-      }
-  
-      if (failed === 0) {
-        this.closeBulkModal();
-        showToast(
-          `${uploaded} song${uploaded === 1 ? '' : 's'} uploaded successfully`,
-          'success'
-        );
-      } else {
-        this.setBulkStatus(
-          `${uploaded} uploaded, ${failed} failed. You can retry the failed files.`,
-          'error'
-        );
-      }
-  
-    } finally {
+      if (this.currentView === 'artists') this.renderArtists();
+    } catch (err) {
+      console.error('Bulk upload failed:', err);
       this.setBulkUploadingState(false);
+
+      let message = 'Upload failed. Check the selected files.';
+      if (err.status === 0) message = 'Server could not be reached.';
+      else if (err.status === 400) message = err.message || 'Upload failed. Check the selected files.';
+      else if (err.status === 404) message = 'Upload endpoint could not be found.';
+      else if (err.status >= 500) message = 'Server error. Please try again shortly.';
+      this.setBulkStatus(message, 'error');
     }
   },
 
@@ -1343,22 +1319,63 @@ const App = {
   },
 
   /* ---------------- DOWNLOADS ---------------- */
+  /** Visual + click-lock state for every download button of one song. */
+  _setDownloading(id, busy) {
+    document.querySelectorAll('.song-row[data-song-id]').forEach(row => {
+      if (Number(row.dataset.songId) !== id) return;
+      const btn = row.querySelector('.row-download-btn');
+      if (!btn) return;
+      btn.classList.toggle('downloading', busy);
+      btn.setAttribute('aria-busy', busy ? 'true' : 'false');
+      btn.style.opacity = busy ? '0.5' : '';
+    });
+    const detailBtn = el('detailDownloadBtn');
+    if (detailBtn && this.activeSongForDetail && this.activeSongForDetail.id === id) {
+      detailBtn.classList.toggle('downloading', busy);
+      detailBtn.style.opacity = busy ? '0.5' : '';
+    }
+  },
+
   async downloadSong(song) {
-    if (!song) return;
+    if (!song) { showToast('Open a song first.', 'error'); return; }
+    if (this.downloadedIds.has(song.id)) { showToast('Already downloaded for offline playback'); return; }
     if (!song.audio_path) { showToast('This song has no audio file to download.', 'error'); return; }
-    showToast('Downloading…');
+    if (this.downloadingIds.has(song.id)) { showToast('Already downloading this song…'); return; }
+
+    this.downloadingIds.add(song.id);
+    this._setDownloading(song.id, true);
+    showToast(`Downloading “${song.title}”…`);
+
     try {
       const [audioBlob, lyricsText] = await Promise.all([
         ApiService.fetchAudioBlob(song.audio_path),
         song.lyrics ? ApiService.fetchLyricsText(song.lyrics).catch(() => '') : Promise.resolve('')
       ]);
+
+      // Ask the browser not to evict the saved songs under storage pressure.
+      if (navigator.storage && navigator.storage.persist) {
+        navigator.storage.persist().catch(() => {});
+      }
+
       await OfflineStore.saveSong(song, audioBlob, lyricsText);
       this.downloadedIds.add(song.id);
       this.reflectDownloadedState();
       showToast('Saved for offline playback', 'success');
       if (this.currentView === 'downloads') this.loadDownloads();
     } catch (err) {
-      showToast(err.message || 'Download failed', 'error');
+      console.error('Download failed:', err);
+      const name = (err && err.name) || '';
+      const msg = (err && err.message) || '';
+      if (name === 'QuotaExceededError' || /quota/i.test(msg)) {
+        showToast('Not enough storage space on this device to save this song.', 'error');
+      } else if (name === 'InvalidStateError' || name === 'SecurityError') {
+        showToast('Offline storage is blocked in this browser (private mode or file:// page?).', 'error');
+      } else {
+        showToast(msg || 'Download failed', 'error');
+      }
+    } finally {
+      this.downloadingIds.delete(song.id);
+      this._setDownloading(song.id, false);
     }
   },
 
