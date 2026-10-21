@@ -26,7 +26,8 @@ class OfflineStore {
         }
       };
       req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => { this._dbPromise = null; reject(req.error); };
+      req.onblocked = () => { this._dbPromise = null; reject(new Error('Offline storage is blocked by another tab. Close other tabs and retry.')); };
     });
     return this._dbPromise;
   }
@@ -45,6 +46,7 @@ class OfflineStore {
       });
       tx.oncomplete = () => resolve(true);
       tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Saving was aborted.'));
     });
   }
 
@@ -462,6 +464,7 @@ const App = {
   editingSongId: null,
   openMenuEl: null,
   downloadedIds: new Set(),
+  downloadingIds: new Set(),
 
   // Seek-bar drag state: while true, player-update events must not
   // overwrite the seek bar's visual position (see onPlayerUpdate).
@@ -643,10 +646,6 @@ const App = {
     const downloadBtn = row.querySelector('.row-download-btn');
     downloadBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (this.downloadedIds.has(song.id)) {
-        showToast('Already downloaded for offline playback');
-        return;
-      }
       await this.downloadSong(song);
     });
 
@@ -1320,22 +1319,63 @@ const App = {
   },
 
   /* ---------------- DOWNLOADS ---------------- */
+  /** Visual + click-lock state for every download button of one song. */
+  _setDownloading(id, busy) {
+    document.querySelectorAll('.song-row[data-song-id]').forEach(row => {
+      if (Number(row.dataset.songId) !== id) return;
+      const btn = row.querySelector('.row-download-btn');
+      if (!btn) return;
+      btn.classList.toggle('downloading', busy);
+      btn.setAttribute('aria-busy', busy ? 'true' : 'false');
+      btn.style.opacity = busy ? '0.5' : '';
+    });
+    const detailBtn = el('detailDownloadBtn');
+    if (detailBtn && this.activeSongForDetail && this.activeSongForDetail.id === id) {
+      detailBtn.classList.toggle('downloading', busy);
+      detailBtn.style.opacity = busy ? '0.5' : '';
+    }
+  },
+
   async downloadSong(song) {
-    if (!song) return;
+    if (!song) { showToast('Open a song first.', 'error'); return; }
+    if (this.downloadedIds.has(song.id)) { showToast('Already downloaded for offline playback'); return; }
     if (!song.audio_path) { showToast('This song has no audio file to download.', 'error'); return; }
-    showToast('Downloading…');
+    if (this.downloadingIds.has(song.id)) { showToast('Already downloading this song…'); return; }
+
+    this.downloadingIds.add(song.id);
+    this._setDownloading(song.id, true);
+    showToast(`Downloading “${song.title}”…`);
+
     try {
       const [audioBlob, lyricsText] = await Promise.all([
         ApiService.fetchAudioBlob(song.audio_path),
         song.lyrics ? ApiService.fetchLyricsText(song.lyrics).catch(() => '') : Promise.resolve('')
       ]);
+
+      // Ask the browser not to evict the saved songs under storage pressure.
+      if (navigator.storage && navigator.storage.persist) {
+        navigator.storage.persist().catch(() => {});
+      }
+
       await OfflineStore.saveSong(song, audioBlob, lyricsText);
       this.downloadedIds.add(song.id);
       this.reflectDownloadedState();
       showToast('Saved for offline playback', 'success');
       if (this.currentView === 'downloads') this.loadDownloads();
     } catch (err) {
-      showToast(err.message || 'Download failed', 'error');
+      console.error('Download failed:', err);
+      const name = (err && err.name) || '';
+      const msg = (err && err.message) || '';
+      if (name === 'QuotaExceededError' || /quota/i.test(msg)) {
+        showToast('Not enough storage space on this device to save this song.', 'error');
+      } else if (name === 'InvalidStateError' || name === 'SecurityError') {
+        showToast('Offline storage is blocked in this browser (private mode or file:// page?).', 'error');
+      } else {
+        showToast(msg || 'Download failed', 'error');
+      }
+    } finally {
+      this.downloadingIds.delete(song.id);
+      this._setDownloading(song.id, false);
     }
   },
 
