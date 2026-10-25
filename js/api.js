@@ -6,7 +6,7 @@
 
 // Local frontend can test against the deployed HTTPS API.
 // Change this only when intentionally running Django locally.
-const API_BASE = 'http://127.0.0.1:8000';  // no trailing slash
+const API_BASE = 'https://80.225.231.54';  // no trailing slash
 
 class ApiError extends Error {
   constructor(message, status) {
