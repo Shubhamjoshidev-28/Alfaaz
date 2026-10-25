@@ -61,6 +61,7 @@ MIDDLEWARE = [
 
 CORS_ALLOWED_ORIGINS = [
     "https://shubhamjoshidev-28.github.io",
+    "https://localhost",
 ]
 
 ROOT_URLCONF = 'Alfaaz.urls'
